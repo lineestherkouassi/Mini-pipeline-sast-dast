@@ -30,25 +30,91 @@ test:
     - mvn test
   dependencies:
     - build
-
-# ==================== SAST ====================
+# ==================== DOCKER ====================
 docker-build:
   stage: docker
+  image: docker:latest
+  services:
+    - docker:dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
   script:
-    - docker build -t $IMAGE_NAME .
+    - docker build -t $IMAGE_NAME -t $IMAGE_LATEST .
+    - docker push $IMAGE_NAME
+    - docker push $IMAGE_LATEST
+  dependencies:
+    - build
+  only:
+    - main
 
+# ==================== SCAN ====================
 trivy-scan:
   stage: scan
-  image: aquasec/trivy
+  image: aquasec/trivy:latest
   script:
-    - trivy image $IMAGE_NAME
+    - trivy image --exit-code 0 --severity HIGH,CRITICAL --format table $IMAGE_LATEST
+    - trivy image --exit-code 0 --severity HIGH,CRITICAL --format json -o trivy-image-report.json $IMAGE_LATEST
+  artifacts:
+    paths:
+      - trivy-image-report.json
+    expire_in: 30 days
+  allow_failure: true
+  dependencies:
+    - docker-build
+  only:
+    - main
 
+# ==================== DEPLOY ====================
 deploy:
   stage: deploy
+  image: docker:latest
+  services:
+    - docker:dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
   script:
-    - docker run -d -p 8080:8080 $IMAGE_NAME
+    - docker pull $IMAGE_LATEST
+    - docker stop devsecops-app || true
+    - docker rm devsecops-app || true
+    - docker run -d --name devsecops-app -p 8080:8080 $IMAGE_LATEST
+    - echo "Application deployed"
+  when: manual
+  only:
+    - main
+  dependencies:
+    - docker-build
 
+# ==================== DAST ====================
 dast:
   stage: dast
+  image: docker:latest
+  services:
+    - docker:dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
   script:
-    - docker run --rm -v ${PWD}:/zap/wrk/:rw -t zaproxy/zap-stable zap-baseline.py -t http://host.docker.internal:8080 -r zap-report.html
+    - docker pull $IMAGE_LATEST
+    - docker run -d --name zap-test-app -p 8080:8080 $IMAGE_LATEST
+    - sleep 30
+    - apk add --no-cache curl
+    - curl -f http://docker:8080/hello || exit 1
+    - docker run --rm --network host -v $(pwd):/zap/wrk/:rw zaproxy/zap-stable zap-baseline.py -t http://docker:8080 -r zap-report.html -J zap-report.json || true
+    - docker stop zap-test-app
+    - docker rm zap-test-app
+  artifacts:
+    paths:
+      - zap-report.html
+      - zap-report.json
+    expire_in: 30 days
+  allow_failure: true
+  dependencies:
+    - docker-build
