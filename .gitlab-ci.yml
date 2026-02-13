@@ -8,43 +8,151 @@ stages:
   - dast
 
 variables:
-  IMAGE_NAME: devsecops-demo
+  IMAGE_NAME: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+  IMAGE_LATEST: $CI_REGISTRY_IMAGE:latest
+  MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
 
+# Cache Maven dependencies
+cache:
+  paths:
+    - .m2/repository
+
+# ==================== BUILD ====================
 build:
   stage: build
+  image: maven:3.9-eclipse-temurin-17
   script:
     - mvn clean package -DskipTests
   artifacts:
     paths:
       - target/*.jar
+    expire_in: 1 hour
 
+# ==================== TEST ====================
 test:
   stage: test
+  image: maven:3.9-eclipse-temurin-17
   script:
     - mvn test
+  dependencies:
+    - build
 
+# ==================== SAST (Trivy sur code source) ====================
 sast:
   stage: sast
+  image: aquasec/trivy:latest
   script:
-    - mvn verify
+    - trivy fs --exit-code 0 --severity HIGH,CRITICAL --format table .
+    - trivy fs --exit-code 0 --severity HIGH,CRITICAL --format json -o trivy-sast-report.json .
+  artifacts:
+    paths:
+      - trivy-sast-report.json
+    expire_in: 30 days
+  allow_failure: true
 
+# ==================== DOCKER BUILD ====================
 docker-build:
   stage: docker
+  image: docker:latest
+  services:
+    - docker:dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
   script:
-    - docker build -t $IMAGE_NAME .
+    - docker build -t $IMAGE_NAME -t $IMAGE_LATEST .
+    - docker push $IMAGE_NAME
+    - docker push $IMAGE_LATEST
+  dependencies:
+    - build
+  only:
+    - main
 
+# ==================== TRIVY SCAN (sur l'image Docker) ====================
 trivy-scan:
   stage: scan
-  image: aquasec/trivy
+  image: aquasec/trivy:latest
   script:
-    - trivy image $IMAGE_NAME
+    - trivy image --exit-code 0 --severity HIGH,CRITICAL --format table $IMAGE_LATEST
+    - trivy image --exit-code 0 --severity HIGH,CRITICAL --format json -o trivy-image-report.json $IMAGE_LATEST
+  artifacts:
+    paths:
+      - trivy-image-report.json
+    expire_in: 30 days
+  allow_failure: true
+  dependencies:
+    - docker-build
+  only:
+    - main
 
+# ==================== DEPLOY ====================
 deploy:
   stage: deploy
+  image: docker:latest
+  services:
+    - docker:dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
   script:
-    - docker run -d -p 8080:8080 $IMAGE_NAME
+    - docker pull $IMAGE_LATEST
+    - docker stop devsecops-app || true
+    - docker rm devsecops-app || true
+    - docker run -d --name devsecops-app -p 8080:8080 $IMAGE_LATEST
+    - echo "Application deployed at http://docker:8080"
+  when: manual
+  only:
+    - main
+  dependencies:
+    - docker-build
 
+# ==================== DAST (OWASP ZAP) ====================
 dast:
   stage: dast
+  image: docker:latest
+  services:
+    - docker:dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
   script:
-    - docker run --rm -v ${PWD}:/zap/wrk/:rw -t zaproxy/zap-stable zap-baseline.py -t http://host.docker.internal:8080
+    # Lance l'application
+    - docker pull $IMAGE_LATEST
+    - docker run -d --name zap-test-app -p 8080:8080 $IMAGE_LATEST
+    
+    # Attend que l'app démarre
+    - sleep 30
+    
+    # Vérifie que l'app répond
+    - apk add --no-cache curl
+    - curl -f http://docker:8080/hello || exit 1
+    
+    # Lance le scan DAST
+    - docker run --rm 
+        --network host 
+        -v $(pwd):/zap/wrk/:rw 
+        zaproxy/zap-stable 
+        zap-baseline.py 
+        -t http://docker:8080 
+        -r zap-report.html 
+        -J zap-report.json || true
+    
+    # Nettoyage
+    - docker stop zap-test-app
+    - docker rm zap-test-app
+  artifacts:
+    paths:
+      - zap-report.html
+      - zap-report.json
+    expire_in: 30 days
+  allow_failure: true
+  dependencies:
+    - docker-build
+  only:
+    - main
