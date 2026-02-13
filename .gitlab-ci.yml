@@ -1,0 +1,50 @@
+stages:
+  - build
+  - test
+  - sast
+  - docker
+  - scan
+  - deploy
+  - dast
+
+variables:
+  IMAGE_NAME: devsecops-demo
+
+build:
+  stage: build
+  script:
+    - mvn clean package -DskipTests
+  artifacts:
+    paths:
+      - target/*.jar
+
+test:
+  stage: test
+  script:
+    - mvn test
+
+sast:
+  stage: sast
+  script:
+    - mvn verify
+
+docker-build:
+  stage: docker
+  script:
+    - docker build -t $IMAGE_NAME .
+
+trivy-scan:
+  stage: scan
+  image: aquasec/trivy
+  script:
+    - trivy image $IMAGE_NAME
+
+deploy:
+  stage: deploy
+  script:
+    - docker run -d -p 8080:8080 $IMAGE_NAME
+
+dast:
+  stage: dast
+  script:
+    - docker run --rm owasp/zap2docker-stable zap-baseline.py -t http://localhost:8080
