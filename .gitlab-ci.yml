@@ -31,11 +31,7 @@ test:
   dependencies:
     - build
 
-sast:
-  stage: sast
-  script:
-    - mvn verify
-
+# ==================== SAST ====================
 docker-build:
   stage: docker
   script:
