@@ -52,7 +52,6 @@ Analyse DAST (OWASP ZAP)
 - DAST
 - Automatisation
 
-#PS: Projet réalisé à des fins pédagogiques et de démonstration.
 ## Objectif
 Mettre en pratique les principes du DevSecOps en intégrant des contrôles de sécurité automatisés tout au long du pipeline CI/CD afin de détecter les vulnérabilités avant la mise en production.
 
