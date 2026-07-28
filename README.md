@@ -22,7 +22,7 @@ Ce projet illustre la mise en œuvre d'une pipeline DevSecOps intégrant des con
 - OWASP ZAP
 
 ## Architecture de la pipeline
-
+```text
 Git Push
     │
     ▼
@@ -42,7 +42,17 @@ Déploiement
     │
     ▼
 Analyse DAST (OWASP ZAP)
+```
+## Compétences démontrées
 
+- CI/CD
+- Docker
+- Sécurité des applications
+- SAST
+- DAST
+- Automatisation
+
+#PS: Projet réalisé à des fins pédagogiques et de démonstration.
 ## Objectif
 Mettre en pratique les principes du DevSecOps en intégrant des contrôles de sécurité automatisés tout au long du pipeline CI/CD afin de détecter les vulnérabilités avant la mise en production.
 
